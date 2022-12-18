@@ -372,6 +372,8 @@ impl TaskFrame for Task {
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: irq::ExceptionStackFrame) {
 	increment_irq_counter(apic::TIMER_INTERRUPT_NUMBER.into());
+	#[cfg(feature = "tcp")]
+	crate::net::executor::wakeup_async_tasks();
 	core_scheduler().handle_waiting_tasks();
 	apic::eoi();
 	core_scheduler().scheduler();
