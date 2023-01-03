@@ -92,6 +92,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9b0705efd4599c15a38151f4721f7bc388306f61084d3bfd50bd07fbca5cb60"
+
+[[package]]
 name = "fastrand"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -210,6 +216,7 @@ dependencies = [
  "async-task",
  "bitflags",
  "crossbeam-utils",
+ "dyn-clone",
  "float-cmp",
  "futures-lite",
  "hashbrown",
