@@ -71,7 +71,7 @@ crossbeam-utils = { version = "0.8", default-features = false }
 dyn-clone = "1.0"
 hashbrown = { version = "0.14", default-features = false }
 hermit-entry = { version = "0.9", features = ["kernel"] }
-hermit-sync = "0.1.3"
+hermit-sync = "0.1.4"
 include-transformed = { version = "0.2", optional = true }
 lock_api = "0.4"
 log = { version = "0.4", default-features = false }
