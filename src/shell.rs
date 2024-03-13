@@ -26,7 +26,7 @@ static mut SHELL: Lazy<Shell<'_>> = Lazy::new(|| {
 	shell.commands.insert(
 		"interrupts",
 		ShellCommand {
-			help: "Shows the number of received interrupts",
+			help: "Shows the number of IRQs",
 			func: |_, shell| {
 				print_statistics();
 				Ok(())
@@ -45,11 +45,22 @@ static mut SHELL: Lazy<Shell<'_>> = Lazy::new(|| {
 			aliases: &["s"],
 		},
 	);
+	#[cfg(any(feature = "tcp", feature = "udp"))]
+	shell.commands.insert(
+		"ip",
+		ShellCommand {
+			help: "Show network config",
+			func: |_, shell| {
+				crate::executor::network::print_network_configuration();
+				Ok(())
+			},
+			aliases: &["ip"],
+		},
+	);
 
 	shell
 });
 
 pub(crate) fn init() {
-	// Also supports async
 	crate::executor::spawn(unsafe { SHELL.run_async() });
 }

@@ -224,6 +224,53 @@ impl<'a> NetworkInterface<'a> {
 		// This deallocates the socket's buffers
 		self.sockets.remove(handle);
 	}
+
+	#[cfg(feature = "shell")]
+	pub(crate) fn print_config(&self) {
+		use smoltcp::phy::Device;
+		use smoltcp::wire::EthernetAddress;
+		use smoltcp::wire::HardwareAddress::Ethernet;
+		use smoltcp::wire::IpCidr::{Ipv4, Ipv6};
+
+		if let Ethernet(EthernetAddress(hardware_addr)) = self.iface.hardware_addr() {
+			println!(
+				"MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+				hardware_addr[0],
+				hardware_addr[1],
+				hardware_addr[2],
+				hardware_addr[3],
+				hardware_addr[4],
+				hardware_addr[5]
+			);
+		}
+
+		for i in self.iface.ip_addrs() {
+			match *i {
+				Ipv4(ip) => {
+					if let smoltcp::wire::Ipv4Address(ip) = ip.address() {
+						println!("IPv4: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+					}
+				}
+				Ipv6(ip) => {
+					if let smoltcp::wire::Ipv6Address(ip) = ip.address() {
+						println!(
+							"IPv6: {:04x}.{:04x}.{:04x}.{:04x}:{:04x}.{:04x}.{:04x}.{:04x}",
+							ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7]
+						);
+					}
+				}
+			}
+		}
+
+		println!("MTU: {}", self.device.capabilities().max_transmission_unit);
+	}
+}
+
+#[cfg(feature = "shell")]
+pub(crate) fn print_network_configuration() {
+	if let Ok(nic) = crate::executor::network::NIC.lock().as_nic_mut() {
+		nic.print_config();
+	}
 }
 
 #[inline]
