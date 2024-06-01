@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["DeviceRegisters","InterruptStatus"],"trait":["DeviceRegisterVolatileFieldAccess","DeviceRegisterVolatileWideFieldAccess"]};

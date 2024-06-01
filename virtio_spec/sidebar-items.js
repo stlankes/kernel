@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["fs","mmio","net","pci","volatile"],"struct":["DeviceStatus","F"],"trait":["FeatureBits"],"type":["be128","be16","be32","be64","le128","le16","le32","le64"]};
