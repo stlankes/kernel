@@ -94,7 +94,7 @@ mod shell;
 mod synch;
 pub mod syscalls;
 pub mod time;
-#[cfg(all(target_arch = "x86_64", feature = "wasm"))]
+#[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), feature = "wasm"))]
 mod wasm;
 
 #[cfg(target_os = "none")]
@@ -159,7 +159,7 @@ extern "C" fn initd(_arg: usize) {
 	#[cfg(not(test))]
 	let (argc, argv, environ) = syscalls::get_application_parameters();
 
-	#[cfg(all(target_arch = "x86_64", feature = "wasm"))]
+	#[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), feature = "wasm"))]
 	if crate::wasm::init().is_err() {
 		error!("Unable to initialized wasm support")
 	}
