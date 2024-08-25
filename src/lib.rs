@@ -94,7 +94,7 @@ mod shell;
 mod synch;
 pub mod syscalls;
 pub mod time;
-#[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), feature = "wasm"))]
+#[cfg(feature = "wasm")]
 mod wasm;
 
 #[cfg(target_os = "none")]
