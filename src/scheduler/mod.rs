@@ -20,6 +20,8 @@ use timer_interrupts::TimerList;
 
 use crate::arch::kernel;
 use crate::arch::kernel::core_local::*;
+#[cfg(feature = "preemptive")]
+use crate::arch::kernel::processor;
 use crate::arch::kernel::scheduler::TaskStacks;
 #[cfg(target_arch = "riscv64")]
 use crate::arch::kernel::switch::switch_to_task;
@@ -35,6 +37,9 @@ pub mod task;
 pub mod timer_interrupts;
 
 static NO_TASKS: AtomicU32 = AtomicU32::new(0);
+/// Length of a preemptive scheduling time slice, in microseconds (10 ms).
+#[cfg(feature = "preemptive")]
+const PREEMPTION_SLICE_US: u64 = 10_000;
 /// Map between Core ID and per-core scheduler
 #[cfg(feature = "smp")]
 static SCHEDULER_INPUTS: SpinMutex<Vec<&InterruptTicketMutex<SchedulerInput>>> =
@@ -398,6 +403,11 @@ impl PerCoreScheduler {
 		without_interrupts(|| {
 			let task = self.blocked_tasks.custom_wakeup(task);
 			self.ready_queue.push(task);
+			#[cfg(feature = "preemptive")]
+			timer_interrupts::create_timer(
+				timer_interrupts::Source::Preemption,
+				PREEMPTION_SLICE_US,
+			);
 		});
 	}
 
@@ -407,6 +417,14 @@ impl PerCoreScheduler {
 			without_interrupts(|| {
 				let task = self.blocked_tasks.custom_wakeup(task);
 				self.ready_queue.push(task);
+				#[cfg(feature = "preemptive")]
+				{
+					let deadline = processor::get_timer_ticks() + PREEMPTION_SLICE_US;
+					timer_interrupts::create_timer_abs(
+						timer_interrupts::Source::Preemption,
+						deadline,
+					);
+				}
 			});
 		} else {
 			get_scheduler_input(task.get_core_id())
@@ -798,6 +816,14 @@ impl PerCoreScheduler {
 
 		if id == new_id {
 			return None;
+		}
+
+		#[cfg(feature = "preemptive")]
+		if !self.ready_queue.is_empty() {
+			timer_interrupts::create_timer(
+				timer_interrupts::Source::Preemption,
+				PREEMPTION_SLICE_US,
+			);
 		}
 
 		// Tell the scheduler about the new task.
