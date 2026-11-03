@@ -23,9 +23,14 @@ use crate::io;
 use crate::syscalls::socket::Af;
 
 fn get_ephemeral_port() -> u16 {
-	static LOCAL_ENDPOINT: AtomicU16 = AtomicU16::new(49152);
+	static LOCAL_ENDPOINT_LOCK: SpinMutex<u16> = SpinMutex::new(49152);
 
-	LOCAL_ENDPOINT.fetch_add(1, Ordering::SeqCst)
+	let mut guard = LOCAL_ENDPOINT_LOCK.lock();
+	*guard += 1;
+	if *guard == 0 {
+		*guard = 1024;
+	}
+	*guard
 }
 
 pub struct Socket {
