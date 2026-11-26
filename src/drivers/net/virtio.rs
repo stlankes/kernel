@@ -567,7 +567,7 @@ impl NetworkDriver for VirtioNetDriver {
 
 	fn handle_interrupt(&mut self) {
 		#[cfg_attr(
-			not(all(feature = "pci", target_arch = "x86_64")),
+			not(all(feature = "pci", any(target_arch = "x86_64", target_arch = "aarch64"))),
 			expect(irrefutable_let_patterns)
 		)]
 		let InterruptCapability::IsrStatus(isr_stat) = &mut self.caps_coll.int_cap else {
@@ -905,7 +905,7 @@ impl crate::drivers::virtio::VirtioDriver for VirtioNetDriver {
 			recv_vqs = Some(dev_spec_init.0);
 			send_vqs = Some(dev_spec_init.1);
 			#[cfg_attr(
-				not(all(feature = "pci", target_arch = "x86_64")),
+				not(all(feature = "pci", any(target_arch = "x86_64", target_arch = "aarch64"))),
 				expect(unused_variables)
 			)]
 			let num_vqs = dev_spec_init.2;
@@ -924,7 +924,7 @@ impl crate::drivers::virtio::VirtioDriver for VirtioNetDriver {
 					crate::arch::kernel::interrupts::add_irq_name(irq, "virtio");
 					info!("Virtio interrupt handler at line {irq}");
 				}
-				#[cfg(all(feature = "pci", target_arch = "x86_64"))]
+				#[cfg(all(feature = "pci", any(target_arch = "x86_64", target_arch = "aarch64")))]
 				InterruptCapability::Msix(msix_table) => {
 					let recv_vqs = (0..num_vqs).step_by(2);
 					let send_vqs = (1..num_vqs).step_by(2);
@@ -932,12 +932,12 @@ impl crate::drivers::virtio::VirtioDriver for VirtioNetDriver {
 						.features
 						.contains(virtio::net::F::CTRL_VQ)
 						.then_some(num_vqs);
-					let wake_network_waker: fn() = wake_network_waker;
+					let queue_handler: fn() = crate::executor::network::network_queue_handler;
 					caps_coll.com_cfg.register_msix_vectors(
 						msix_table,
 						handlers,
 						crate::executor::network::network_device_configuration_handler,
-						[(recv_vqs, wake_network_waker)].into_iter(),
+						[(recv_vqs, queue_handler)].into_iter(),
 						send_vqs.chain(ctrl_vq),
 					);
 				}

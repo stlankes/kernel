@@ -57,6 +57,11 @@ impl<T: ConfigRegionAccess> PciDevice<T> {
 		Self { address, access }
 	}
 
+	#[cfg(target_arch = "aarch64")]
+	pub fn address(&self) -> PciAddress {
+		self.address
+	}
+
 	pub fn access(&self) -> &T {
 		&self.access
 	}
@@ -558,7 +563,46 @@ pub(crate) mod msix {
 	}
 
 	pub trait MsixTableVolatileElementAccess {
+		#[cfg(target_arch = "x86_64")]
 		fn configure(&mut self, index: u16, vector: u8);
+
+		/// Configures the [TableEntry] at the given index to write `data` to `address`.
+		#[cfg(target_arch = "aarch64")]
+		fn configure_message(&mut self, index: u16, address: memory_addresses::PhysAddr, data: u32);
+	}
+
+	#[cfg(target_arch = "aarch64")]
+	impl MsixTableVolatileElementAccess for volatile::VolatileRef<'_, [TableEntry]> {
+		fn configure_message(
+			&mut self,
+			index: u16,
+			address: memory_addresses::PhysAddr,
+			data: u32,
+		) {
+			// The MSI-X table is little-endian.
+			const MASKED: u32 = 1u32.to_le();
+
+			let msix_entry = unsafe {
+				self.as_mut_ptr()
+					.map(|table| table.cast().offset(index.try_into().unwrap()))
+			};
+
+			// Mask the entry because "[s]oftware must not modify the Address, Data, or Steering Tag fields
+			// of an entry while it is unmasked." (PCIe spec. 6.1.4.2)
+			msix_entry
+				.vector_control()
+				.update(|control| control | MASKED);
+			msix_entry
+				.message_address()
+				.write((address.as_u64() as u32).to_le());
+			msix_entry
+				.message_upper_address()
+				.write(((address.as_u64() >> 32) as u32).to_le());
+			msix_entry.message_data().write(data.to_le());
+			msix_entry
+				.vector_control()
+				.update(|control| control & !MASKED);
+		}
 	}
 
 	#[cfg(target_arch = "x86_64")]

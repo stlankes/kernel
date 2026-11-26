@@ -221,6 +221,28 @@ fn detect_interrupt(
 	None
 }
 
+/// Returns the DeviceID, with which the ITS identifies the messages of the
+/// PCI function with the requester ID `rid`.
+pub(crate) fn msi_device_id(rid: u16) -> u32 {
+	let fdt = env::start_info().fdt().unwrap();
+	let Some(msi_map) = fdt
+		.find_compatible(&["pci-host-ecam-generic"])
+		.and_then(|node| node.property("msi-map"))
+	else {
+		return rid.into();
+	};
+
+	// Each entry consists of rid-base, msi-controller, msi-base and length.
+	for entry in msi_map.value.as_chunks::<16>().0 {
+		let cell = |i: usize| u32::from_be_bytes(entry[4 * i..4 * i + 4].try_into().unwrap());
+		let (rid_base, msi_base, length) = (cell(0), cell(2), cell(3));
+		if (rid_base..rid_base + length).contains(&u32::from(rid)) {
+			return msi_base + u32::from(rid) - rid_base;
+		}
+	}
+	rid.into()
+}
+
 pub fn init() {
 	let fdt = env::start_info().fdt().unwrap();
 

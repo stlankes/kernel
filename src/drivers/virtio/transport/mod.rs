@@ -10,7 +10,7 @@ pub mod pci;
 
 pub(crate) enum InterruptCapability {
 	IsrStatus(IsrStatus),
-	#[cfg(all(feature = "pci", target_arch = "x86_64"))]
+	#[cfg(all(feature = "pci", any(target_arch = "x86_64", target_arch = "aarch64")))]
 	Msix(volatile::VolatileRef<'static, [crate::drivers::pci::msix::TableEntry]>),
 }
 

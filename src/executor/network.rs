@@ -58,12 +58,27 @@ pub(crate) fn network_handler() {
 	feature = "virtio-net",
 	not(feature = "rtl8139"),
 	feature = "pci",
-	target_arch = "x86_64"
+	any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub(crate) fn network_device_configuration_handler() {
 	if let Ok(nic) = NIC.lock().as_nic_mut() {
 		nic.handle_device_configuration_interrupt();
 	}
+}
+
+/// Handles the interrupt of a receive queue. The network task polls until the
+/// queue is empty and reenables the interrupts.
+#[cfg(all(
+	feature = "virtio-net",
+	not(feature = "rtl8139"),
+	feature = "pci",
+	any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) fn network_queue_handler() {
+	if let Ok(nic) = NIC.lock().as_nic_mut() {
+		nic.set_polling_mode(true);
+	}
+	wake_network_waker();
 }
 
 impl<'a> NetworkState<'a> {
@@ -468,7 +483,7 @@ impl<'a> NetworkInterface<'a> {
 		feature = "virtio-net",
 		not(feature = "rtl8139"),
 		feature = "pci",
-		target_arch = "x86_64"
+		any(target_arch = "x86_64", target_arch = "aarch64")
 	))]
 	fn handle_device_configuration_interrupt(&mut self) {
 		self.get_inner_device()

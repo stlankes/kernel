@@ -199,7 +199,7 @@ impl VirtioBlkDriver {
 		let mut caps = self.caps.lock();
 
 		#[cfg_attr(
-			not(all(feature = "pci", target_arch = "x86_64")),
+			not(all(feature = "pci", any(target_arch = "x86_64", target_arch = "aarch64"))),
 			expect(irrefutable_let_patterns)
 		)]
 		let InterruptCapability::IsrStatus(isr_stat) = &mut caps.int_cap else {
@@ -369,7 +369,7 @@ impl super::virtio::VirtioDriver for VirtioBlkDriver {
 					crate::arch::kernel::interrupts::add_irq_name(irq, "virtio");
 					info!("Virtio interrupt handler at line {irq}");
 				}
-				#[cfg(all(feature = "pci", target_arch = "x86_64"))]
+				#[cfg(all(feature = "pci", any(target_arch = "x86_64", target_arch = "aarch64")))]
 				InterruptCapability::Msix(msix_table) => {
 					use core::iter;
 

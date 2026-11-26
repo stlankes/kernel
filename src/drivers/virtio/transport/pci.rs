@@ -36,9 +36,9 @@ use crate::drivers::fs::VirtioFsDriver;
 use crate::drivers::net::virtio::VirtioNetDriver;
 use crate::drivers::pci::PciDevice;
 use crate::drivers::pci::error::PciError;
-#[cfg(all(feature = "pci", target_arch = "x86_64"))]
+#[cfg(all(feature = "pci", any(target_arch = "x86_64", target_arch = "aarch64")))]
 use crate::drivers::pci::msix;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::drivers::pci::msix::MsixTableVolatileElementAccess;
 #[cfg(feature = "virtio-rng")]
 use crate::drivers::rng::VirtioRngDriver;
@@ -175,12 +175,19 @@ pub struct ComCfg {
 	/// References the raw structure in PCI memory space. Is static as
 	/// long as the device is present, which is mandatory in order to let this code work.
 	com_cfg: VolatileRef<'static, CommonCfg>,
+	/// DeviceID, with which the ITS identifies the messages of the device
+	#[cfg(target_arch = "aarch64")]
+	msi_device_id: u32,
 }
 
 // Private interface of ComCfg
 impl ComCfg {
 	fn new(raw: VolatileRef<'static, CommonCfg>) -> Self {
-		ComCfg { com_cfg: raw }
+		ComCfg {
+			com_cfg: raw,
+			#[cfg(target_arch = "aarch64")]
+			msi_device_id: 0,
+		}
 	}
 }
 
@@ -189,7 +196,10 @@ pub struct VqCfgHandler<'a> {
 	raw: VolatileRef<'a, CommonCfg>,
 }
 
-#[cfg_attr(not(target_arch = "x86_64"), expect(unused))]
+#[cfg_attr(
+	not(any(target_arch = "x86_64", target_arch = "aarch64")),
+	expect(unused)
+)]
 pub(crate) const NO_VECTOR: u16 = 0xffff;
 
 impl VqCfgHandler<'_> {
@@ -243,7 +253,7 @@ impl VqCfgHandler<'_> {
 			.write(addr.as_u64().into());
 	}
 
-	#[cfg(target_arch = "x86_64")]
+	#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 	fn set_queue_msix_vector(&mut self, index: u16) -> Result<(), ()> {
 		self.select_queue();
 		let queue_msix_vector = self.raw.as_mut_ptr().queue_msix_vector();
@@ -371,7 +381,7 @@ impl ComCfg {
 	}
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 impl ComCfg {
 	fn set_config_msix_vector(&mut self, index: u16) -> Result<(), ()> {
 		let config_msix_vector = self.com_cfg.as_mut_ptr().config_msix_vector();
@@ -386,6 +396,7 @@ impl ComCfg {
 		}
 	}
 
+	#[cfg(target_arch = "x86_64")]
 	pub(crate) fn register_msix_vectors(
 		&mut self,
 		msix_table: &mut VolatileRef<'_, [msix::TableEntry]>,
@@ -430,6 +441,51 @@ impl ComCfg {
 			}
 			crate::arch::kernel::interrupts::add_irq_name(irq, "virtio queue");
 			info!("Virtio queue interrupt handler at line {irq}");
+		}
+
+		for i in handlerless_queues {
+			self.select_vq(i)
+				.unwrap()
+				.set_queue_msix_vector(NO_VECTOR)
+				.unwrap();
+		}
+	}
+
+	/// Maps the MSI-X vectors to LPIs via the ITS. The entry `i` of the MSI-X table
+	/// sends the event `i`. The legacy interrupt handlers in `_handlers` are not used.
+	#[cfg(target_arch = "aarch64")]
+	pub(crate) fn register_msix_vectors(
+		&mut self,
+		msix_table: &mut VolatileRef<'_, [msix::TableEntry]>,
+		_handlers: &mut InterruptHandlerMap,
+		config_handler: fn(),
+		queue_handlers: impl ExactSizeIterator<Item = (impl IntoIterator<Item = u16>, fn())>,
+		handlerless_queues: impl IntoIterator<Item = u16>,
+	) {
+		use crate::arch::kernel::{interrupts, its};
+
+		const TABLE_CONFIG_INDEX: u16 = 0;
+		let num_vectors = 1 + u16::try_from(queue_handlers.len()).unwrap();
+		let first_lpi = interrupts::allocate_lpis(num_vectors.into());
+		its::map_device(self.msi_device_id, num_vectors.into(), first_lpi);
+		let translater = its::translater().unwrap();
+
+		msix_table.configure_message(TABLE_CONFIG_INDEX, translater, TABLE_CONFIG_INDEX.into());
+		interrupts::add_lpi_handler(first_lpi, config_handler);
+		self.set_config_msix_vector(TABLE_CONFIG_INDEX).unwrap();
+		info!("Virtio config interrupt handler at LPI {first_lpi}");
+
+		for ((queues, handler), table_queue_index) in queue_handlers.zip(1..) {
+			let lpi = first_lpi + u32::from(table_queue_index);
+			msix_table.configure_message(table_queue_index, translater, table_queue_index.into());
+			interrupts::add_lpi_handler(lpi, handler);
+			for i in queues {
+				self.select_vq(i)
+					.unwrap()
+					.set_queue_msix_vector(table_queue_index)
+					.unwrap();
+			}
+			info!("Virtio queue interrupt handler at LPI {lpi}");
 		}
 
 		for i in handlerless_queues {
@@ -592,7 +648,7 @@ pub(crate) fn map_caps(
 	let mut notif_cfg = None;
 	let mut isr_cfg = None;
 	let mut dev_cfg_list = Vec::new();
-	#[cfg(target_arch = "x86_64")]
+	#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 	let mut msix_table = None;
 
 	let bar_mappings = device.memory_map_bars(true);
@@ -649,7 +705,7 @@ pub(crate) fn map_caps(
 					CapCfgType::Isr => {
 						let cond = isr_cfg.is_none();
 						// We prefer MSI-X over ISR Status.
-						#[cfg(target_arch = "x86_64")]
+						#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 						let cond = cond && msix_table.is_none();
 						if cond {
 							match pci_cap.map_cap_cfg() {
@@ -673,9 +729,13 @@ pub(crate) fn map_caps(
 					_ => continue,
 				}
 			}
-			// We can currently only make use of MSI-X on x86_64.
-			#[cfg(target_arch = "x86_64")]
+			// We can currently only make use of MSI-X on x86_64 and on aarch64 with an ITS.
+			#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 			PciCapability::MsiX(mut msix_capability) => {
+				#[cfg(target_arch = "aarch64")]
+				if crate::arch::kernel::its::translater().is_none() {
+					continue;
+				}
 				msix_capability.set_enabled(true, device.access());
 
 				// the capability should provide a valid BAR ID and "[t]he BAR [...] must map
@@ -702,7 +762,9 @@ pub(crate) fn map_caps(
 	}
 
 	let isr_cfg = cfg_select! {
-		target_arch = "x86_64" => msix_table.map(InterruptCapability::Msix),
+		any(target_arch = "x86_64", target_arch = "aarch64") => {
+			msix_table.map(InterruptCapability::Msix)
+		}
 		_ => None,
 	}
 	.or(isr_cfg.map(InterruptCapability::IsrStatus));
@@ -711,16 +773,27 @@ pub(crate) fn map_caps(
 		Some(InterruptCapability::IsrStatus(_)) => {
 			info!("The device will use legacy interrupts.");
 		}
-		#[cfg(target_arch = "x86_64")]
+		#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 		Some(InterruptCapability::Msix(_)) => {
 			info!("Found MSI-X capability. The device will use message signaled interrupts.");
 		}
 		_ => (),
 	}
 
+	#[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
+	let mut com_cfg = com_cfg.ok_or(VirtioError::NoComCfg(device_id))?;
+	#[cfg(target_arch = "aarch64")]
+	{
+		let address = device.address();
+		let rid = (u16::from(address.bus()) << 8)
+			| (u16::from(address.device()) << 3)
+			| u16::from(address.function());
+		com_cfg.msi_device_id = crate::arch::kernel::pci::msi_device_id(rid);
+	}
+
 	Ok((
 		UniCapsColl {
-			com_cfg: com_cfg.ok_or(VirtioError::NoComCfg(device_id))?,
+			com_cfg,
 			notif_cfg: notif_cfg.ok_or(VirtioError::NoNotifCfg(device_id))?,
 			int_cap: isr_cfg.ok_or(VirtioError::NoIsrCfg(device_id))?,
 		},
