@@ -1,5 +1,7 @@
 pub mod core_local;
 pub mod interrupts;
+#[cfg(feature = "pci")]
+pub(crate) mod its;
 #[cfg(feature = "kernel-stack")]
 pub mod kernel_stack;
 mod lscpu;

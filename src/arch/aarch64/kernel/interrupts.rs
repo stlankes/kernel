@@ -1,6 +1,10 @@
 use alloc::collections::{BTreeMap, VecDeque};
+#[cfg(feature = "pci")]
+use alloc::vec::Vec;
 use core::arch::asm;
 use core::ptr::{self, NonNull};
+#[cfg(feature = "pci")]
+use core::sync::atomic::AtomicU32;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use aarch64_cpu::asm::barrier::{ISH, SY, dmb, isb};
@@ -14,6 +18,8 @@ use hermit_sync::{InterruptSpinMutex, InterruptTicketMutex, OnceCell, SpinMutex}
 use memory_addresses::{PhysAddr, VirtAddr};
 
 use crate::arch::kernel::core_local::{core_id, core_scheduler, increment_irq_counter};
+#[cfg(feature = "pci")]
+use crate::arch::kernel::its;
 use crate::arch::kernel::scheduler::State;
 use crate::arch::kernel::serial::handle_uart_interrupt;
 use crate::arch::mm::paging::{self, BasePageSize, PageSize, PageTableEntryFlags};
@@ -38,6 +44,18 @@ static mut TIMER_INTERRUPT: u32 = 0;
 static mut UART_INTERRUPT: u32 = 0;
 /// Possible interrupt handlers
 static INTERRUPT_HANDLERS: OnceCell<InterruptHandlerMap> = OnceCell::new();
+/// Handlers of the LPIs, the key is the INTID minus [`its::LPI_BASE`]
+#[cfg(feature = "pci")]
+static LPI_HANDLERS: OnceCell<LpiHandlerMap> = OnceCell::new();
+#[cfg(feature = "pci")]
+type LpiHandlerMap = HashMap<u32, VecDeque<fn()>, RandomState>;
+/// LPI handlers, which drivers registered before [`install_handlers`]
+#[cfg(feature = "pci")]
+static REGISTERED_LPI_HANDLERS: SpinMutex<Vec<LpiHandler>> = SpinMutex::new(Vec::new());
+#[cfg(feature = "pci")]
+type LpiHandler = (u32, fn());
+#[cfg(feature = "pci")]
+static NEXT_LPI: AtomicU32 = AtomicU32::new(0);
 /// Driver for the Arm Generic Interrupt Controller version 3 (or 4).
 pub(crate) static GIC: SpinMutex<Option<GicV3<'_>>> = SpinMutex::new(None);
 
@@ -116,6 +134,28 @@ pub(crate) fn install_handlers(old_handlers: InterruptHandlerMap) {
 	}
 
 	INTERRUPT_HANDLERS.set(handlers).unwrap();
+
+	#[cfg(feature = "pci")]
+	{
+		let mut lpi_handlers: LpiHandlerMap =
+			HashMap::with_hasher(RandomState::with_seeds(0, 0, 0, 0));
+		for (lpi, handler) in REGISTERED_LPI_HANDLERS.lock().drain(..) {
+			lpi_handlers.entry(lpi).or_default().push_back(handler);
+		}
+		LPI_HANDLERS.set(lpi_handlers).unwrap();
+	}
+}
+
+/// Returns the first of `count` unused LPIs.
+#[cfg(feature = "pci")]
+pub(crate) fn allocate_lpis(count: u32) -> u32 {
+	NEXT_LPI.fetch_add(count, Ordering::Relaxed)
+}
+
+/// Registers `handler` for `lpi`, which [`install_handlers`] installs.
+#[cfg(feature = "pci")]
+pub(crate) fn add_lpi_handler(lpi: u32, handler: fn()) {
+	REGISTERED_LPI_HANDLERS.lock().push((lpi, handler));
 }
 
 #[unsafe(no_mangle)]
@@ -144,20 +184,34 @@ pub(crate) extern "C" fn do_fiq(_state: &State) -> *mut usize {
 	core_scheduler().scheduler().unwrap_or_default()
 }
 
+/// Counts the SGI, PPI or SPI `intid` and returns its handlers.
+fn irq_handlers(intid: u32) -> Option<&'static VecDeque<fn()>> {
+	let vector = u8::try_from(intid).unwrap();
+	increment_irq_counter(vector);
+	INTERRUPT_HANDLERS.get()?.get(&vector)
+}
+
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn do_irq(_state: &State) -> *mut usize {
 	let Some(irqid) = GicCpuInterface::get_and_acknowledge_interrupt(InterruptGroup::Group1) else {
 		return ptr::null_mut();
 	};
 
-	let vector: u8 = u32::from(irqid).try_into().unwrap();
+	let intid = u32::from(irqid);
+	debug!("Receive interrupt {intid}");
 
-	debug!("Receive interrupt {vector}");
-	increment_irq_counter(vector);
+	#[cfg(feature = "pci")]
+	let queue = if intid >= its::LPI_BASE {
+		LPI_HANDLERS
+			.get()
+			.and_then(|handlers| handlers.get(&(intid - its::LPI_BASE)))
+	} else {
+		irq_handlers(intid)
+	};
+	#[cfg(not(feature = "pci"))]
+	let queue = irq_handlers(intid);
 
-	if let Some(handlers) = INTERRUPT_HANDLERS.get()
-		&& let Some(queue) = handlers.get(&vector)
-	{
+	if let Some(queue) = queue {
 		for handler in queue.iter() {
 			handler();
 		}
@@ -379,6 +433,19 @@ pub(crate) fn init() {
 	gic.setup(cpu_id);
 	GicCpuInterface::set_priority_mask(0xff);
 
+	#[cfg(feature = "pci")]
+	{
+		its::init(gicr_address, gicr_start);
+		if let Some(its_node) = fdt.find_compatible(&["arm,gic-v3-its"]) {
+			let reg = its_node.reg().unwrap().next().unwrap();
+			its::init_its(
+				PhysAddr::from(reg.starting_address.addr()),
+				reg.size.unwrap(),
+				num_cpus,
+			);
+		}
+	}
+
 	if let Some((irqtype, irq, irqflags)) = timer_irq() {
 		unsafe {
 			TIMER_INTERRUPT = irq;
@@ -455,6 +522,8 @@ pub fn init_cpu() {
 	debug!("Mark cpu {cpu_id} as awake");
 
 	gic.init_cpu(cpu_id);
+	#[cfg(feature = "pci")]
+	its::init_cpu(cpu_id);
 	GicCpuInterface::enable_group1(true);
 	GicCpuInterface::set_priority_mask(0xff);
 
